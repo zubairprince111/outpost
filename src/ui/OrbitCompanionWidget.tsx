@@ -57,10 +57,10 @@ export const OrbitCompanionWidget: React.FC<OrbitWidgetProps> = ({
   };
 
   return (
-    <div className="absolute bottom-6 left-6 z-20 pointer-events-auto max-w-sm">
-      <div className={`flex items-center gap-3 bg-slate-950/90 backdrop-blur-md border ${getMoodBorder()} rounded-2xl p-3.5 transition-all duration-300`}>
+    <div className="absolute bottom-14 left-2.5 right-2.5 sm:bottom-6 sm:left-6 sm:right-auto z-20 pointer-events-auto sm:max-w-sm">
+      <div className={`flex items-center gap-2.5 sm:gap-3 bg-slate-950/90 backdrop-blur-md border ${getMoodBorder()} rounded-2xl p-2.5 sm:p-3.5 transition-all duration-300`}>
         {/* Animated Bot Avatar */}
-        <div className="relative shrink-0 w-12 h-12 rounded-xl overflow-hidden border border-slate-700 bg-slate-900 flex items-center justify-center">
+        <div className="relative shrink-0 w-9 h-9 sm:w-12 sm:h-12 rounded-xl overflow-hidden border border-slate-700 bg-slate-900 flex items-center justify-center">
           <img
             src="/images/orbit_advisor.jpg"
             alt="ORBIT AI"
@@ -73,10 +73,10 @@ export const OrbitCompanionWidget: React.FC<OrbitWidgetProps> = ({
         </div>
 
         {/* Message bubble */}
-        <div className="flex-1">
-          <div className="flex items-center justify-between mb-1">
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-xs tracking-wider text-slate-100">ORBIT</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between mb-0.5 sm:mb-1">
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <span className="font-bold text-[11px] sm:text-xs tracking-wider text-slate-100">ORBIT</span>
               {getMoodBadge()}
             </div>
             {hasVoice && onPlayVoice && (
@@ -89,7 +89,7 @@ export const OrbitCompanionWidget: React.FC<OrbitWidgetProps> = ({
               </button>
             )}
           </div>
-          <p className="text-xs text-slate-200 leading-relaxed font-sans font-medium">
+          <p className="text-[11px] sm:text-xs text-slate-200 leading-snug sm:leading-relaxed font-sans font-medium line-clamp-2 sm:line-clamp-none">
             "{message}"
           </p>
         </div>
@@ -97,3 +97,4 @@ export const OrbitCompanionWidget: React.FC<OrbitWidgetProps> = ({
     </div>
   );
 };
+

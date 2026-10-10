@@ -334,6 +334,96 @@ export class SimulationEngine {
     };
   }
 
+  public static createRadiationStormEvent(triggerCycle: number): CriticalEvent {
+    return {
+      id: "event_radiation_storm",
+      triggerCycle,
+      title: "SOLAR RADIATION STORM INBOUND",
+      icon: "🛡️",
+      summary: "NASA Deep Space Network detected a coronal mass ejection heading toward the lunar South Pole. Unshielded electronics and crew face elevated radiation!",
+      orbitWarning: "Commander, solar particle flux is spiking! We must balance electromagnetic shielding, crew shelter protocol, and telemetry.",
+      whyExplanation: "Unlike Earth, the Moon has no global magnetic field or thick atmosphere to deflect solar protons. Active shielding and water-wall shelters protect astronauts.",
+      options: [
+        {
+          id: "opt_storm_full_shield",
+          title: "Energize Magnetic & Water Shielding",
+          subtitle: "Divert battery power to habitat shielding coils",
+          icon: "🛡️",
+          benefits: ["Crew health 100% protected (+5%)", "All sensitive lab instruments preserved (+20 PTS)"],
+          costs: ["Consumes 15% battery reserve for shield coils"],
+          risks: ["Requires healthy battery buffer to sustain"],
+          deltaPower: -10,
+          deltaBattery: -15,
+          deltaWater: 0,
+          deltaFood: 0,
+          deltaOxygen: 2,
+          deltaCrew: 5,
+          deltaScience: 20,
+          causalChain: [
+            "Decision: Active Radiation Shielding Online",
+            "Battery bank powers electromagnetic deflector",
+            "Crew sheltered safely inside habitat water-wall core",
+            "Storm telemetry captured for +20 Science PTS!"
+          ],
+          worldVisualEffect: 'balanced_conserve'
+        },
+        {
+          id: "opt_storm_shelter_only",
+          title: "Passive Shelter & Low Power",
+          subtitle: "Retreat crew to inner core and power down exterior arrays",
+          icon: "🏠",
+          benefits: ["Saves +10% battery and +10% power", "Protects crew with zero electrical drain"],
+          costs: ["Exterior rover and telescope operations paused (-10 PTS)"],
+          risks: ["Minor delay in surface exploration"],
+          deltaPower: 10,
+          deltaBattery: 10,
+          deltaWater: 2,
+          deltaFood: 0,
+          deltaOxygen: 0,
+          deltaCrew: 2,
+          deltaScience: -10,
+          causalChain: [
+            "Decision: Passive Storm Shelter Protocol",
+            "Exterior subsystems placed in safe sleep mode",
+            "Battery reserves climb +10% during storm passage",
+            "Crew emerges safe and ready for final mission phase"
+          ],
+          worldVisualEffect: 'emergency_dim'
+        },
+        {
+          id: "opt_storm_ignore_research",
+          title: "Ride Out Storm at Full Science",
+          subtitle: "Record high-energy cosmic rays without powering down",
+          icon: "⚡",
+          benefits: ["Massive rare particle data (+75 Science PTS)"],
+          costs: ["Radiation degrades solar circuits (-20% Power, -20% Battery)", "Crew stress increases (-18% Crew Health)"],
+          risks: ["High risk of subsystem damage and crew radiation exposure"],
+          deltaPower: -20,
+          deltaBattery: -20,
+          deltaWater: -5,
+          deltaFood: -5,
+          deltaOxygen: -5,
+          deltaCrew: -18,
+          deltaScience: 75,
+          causalChain: [
+            "Decision: Unshielded High-Energy Recording",
+            "Spectrometers capture rare solar storm data (+75 PTS)",
+            "Solar inverters suffer proton upsets (-20% Battery)",
+            "Crew radiation exposure triggers medical alert (-18% Health)!"
+          ],
+          worldVisualEffect: 'science_laser'
+        }
+      ]
+    };
+  }
+
+  public static getEventForCycle(cycle: number): CriticalEvent {
+    const mod = ((cycle - 1) % 3);
+    if (mod === 0) return this.createSolarDropEvent(cycle);
+    if (mod === 1) return this.createWaterClogEvent(cycle);
+    return this.createRadiationStormEvent(cycle);
+  }
+
   /**
    * Signature Feature: Deterministic Future Fork Simulator
    * Simulates the exact consequences of all 3 branches from the current state.
@@ -343,27 +433,10 @@ export class SimulationEngine {
     event: CriticalEvent
   ): FutureOutcome[] {
     return event.options.map(option => {
-      const simulatedPower = Math.max(0, Math.min(100, currentState.power + option.deltaPower));
-      const simulatedBattery = Math.max(0, Math.min(100, currentState.battery + option.deltaBattery));
-      const simulatedWater = Math.max(0, Math.min(100, currentState.water + option.deltaWater));
-      const simulatedFood = Math.max(0, Math.min(100, currentState.food + option.deltaFood));
-      const simulatedOxygen = Math.max(0, Math.min(100, currentState.oxygen + option.deltaOxygen));
-      const simulatedCrew = Math.max(0, Math.min(100, currentState.crewHealth + option.deltaCrew));
-      const simulatedScience = Math.max(0, currentState.scienceScore + option.deltaScience);
-
-      const simulatedEndState: ResourceState = {
-        ...currentState,
-        power: simulatedPower,
-        battery: simulatedBattery,
-        water: simulatedWater,
-        food: simulatedFood,
-        oxygen: simulatedOxygen,
-        crewHealth: simulatedCrew,
-        scienceScore: simulatedScience
-      };
+      const simulatedEndState = this.advanceCycle(currentState, option);
 
       const startHealth = (currentState.battery * 0.35 + currentState.crewHealth * 0.35 + currentState.water * 0.15 + currentState.power * 0.15);
-      const endHealth = (simulatedBattery * 0.35 + simulatedCrew * 0.35 + simulatedWater * 0.15 + simulatedPower * 0.15);
+      const endHealth = (simulatedEndState.battery * 0.35 + simulatedEndState.crewHealth * 0.35 + simulatedEndState.water * 0.15 + simulatedEndState.power * 0.15);
       const deltaHealth = endHealth - startHealth;
 
       const trajectory: TrajectoryPoint[] = [
@@ -374,15 +447,15 @@ export class SimulationEngine {
       ];
 
       let riskStatus = FutureRiskStatus.SAFE;
-      if (simulatedBattery <= 25 || simulatedCrew <= 35 || simulatedWater <= 20) {
+      if (simulatedEndState.battery <= 25 || simulatedEndState.crewHealth <= 35 || simulatedEndState.water <= 20) {
         riskStatus = FutureRiskStatus.FAIL;
-      } else if (simulatedBattery <= 45 || simulatedCrew <= 60 || simulatedPower <= 35) {
+      } else if (simulatedEndState.battery <= 45 || simulatedEndState.crewHealth <= 65 || simulatedEndState.power <= 40 || option.deltaBattery <= -20) {
         riskStatus = FutureRiskStatus.RISKY;
       }
 
       const forecastBadge: 'OPTIMISTIC' | 'EXPECTED' | 'PESSIMISTIC' =
         riskStatus === FutureRiskStatus.FAIL ? 'PESSIMISTIC' :
-        (option.deltaBattery > 10 || option.deltaCrew > 3) ? 'OPTIMISTIC' : 'EXPECTED';
+        (option.deltaBattery >= 10 || option.deltaWater >= 15) ? 'OPTIMISTIC' : 'EXPECTED';
 
       return {
         option,
@@ -395,52 +468,90 @@ export class SimulationEngine {
   }
 
   /**
-   * Advances the mission cycle after user commits a decision
+   * Advances the mission cycle after user commits a decision.
+   * Matches simulateFutureFork 100% deterministically so preview == actual result.
    */
   public static advanceCycle(
     state: ResourceState,
-    option: DecisionOption,
-    solarForecastModifier: number = 0
+    option: DecisionOption
   ): ResourceState {
-    const baselinePower = -4 + solarForecastModifier;
-    const baselineBattery = state.power < 40 ? -8 : 4;
-    const baselineWater = -3;
-    const baselineFood = state.greenhouseMode === GreenhouseMode.GROW_MORE ? 5 : 2;
-    const baselineOxygen = -1;
-    const baselineCrew = (state.battery < 25 || state.oxygen < 30) ? -12 : 0;
+    const nextScienceMode =
+      option.worldVisualEffect === 'science_laser'
+        ? ScienceMode.HIGH_OUTPUT
+        : option.worldVisualEffect === 'emergency_dim'
+        ? ScienceMode.PAUSED
+        : ScienceMode.ACTIVE;
+
+    const nextGreenhouseMode =
+      option.worldVisualEffect === 'emergency_dim'
+        ? GreenhouseMode.SAVE_RESOURCES
+        : GreenhouseMode.BALANCED;
 
     return {
       ...state,
-      power: Math.max(0, Math.min(100, Math.round(state.power + option.deltaPower + baselinePower))),
-      battery: Math.max(0, Math.min(100, Math.round(state.battery + option.deltaBattery + baselineBattery))),
-      water: Math.max(0, Math.min(100, Math.round(state.water + option.deltaWater + baselineWater))),
-      food: Math.max(0, Math.min(100, Math.round(state.food + option.deltaFood + baselineFood))),
-      oxygen: Math.max(0, Math.min(100, Math.round(state.oxygen + option.deltaOxygen + baselineOxygen))),
-      crewHealth: Math.max(0, Math.min(100, Math.round(state.crewHealth + option.deltaCrew + baselineCrew))),
-      scienceScore: Math.max(0, state.scienceScore + option.deltaScience)
+      power: Math.max(0, Math.min(100, Math.round(state.power + option.deltaPower))),
+      battery: Math.max(0, Math.min(100, Math.round(state.battery + option.deltaBattery))),
+      water: Math.max(0, Math.min(100, Math.round(state.water + option.deltaWater))),
+      food: Math.max(0, Math.min(100, Math.round(state.food + option.deltaFood))),
+      oxygen: Math.max(0, Math.min(100, Math.round(state.oxygen + option.deltaOxygen))),
+      crewHealth: Math.max(0, Math.min(100, Math.round(state.crewHealth + option.deltaCrew))),
+      scienceScore: Math.max(0, state.scienceScore + option.deltaScience),
+      scienceMode: nextScienceMode,
+      greenhouseMode: nextGreenhouseMode
     };
   }
 
   /**
-   * Generates Root Cause Mission Autopsy if Outpost fails
+   * Generates Root Cause Mission Autopsy & Final Evaluation
    */
   public static generateMissionAutopsy(
     finalState: ResourceState,
     missionLogs: MissionLogEntry[]
   ): MissionAutopsyData {
-    let failedMetric = "CRITICAL POWER LOSS";
-    if (finalState.battery <= 20) failedMetric = "BATTERY DEPLETION";
-    else if (finalState.crewHealth <= 25) failedMetric = "CREW HEALTH COMPROMISED";
-    else if (finalState.water <= 15) failedMetric = "WATER EXHAUSTION";
+    const isFailed = finalState.battery <= 30 || finalState.crewHealth <= 45 || finalState.water <= 25;
 
-    const primaryCause = failedMetric === "BATTERY DEPLETION"
-      ? "Battery bank reached critical 0% reserve. With no stored electrical power, habitat life support and heaters went offline."
-      : "Life support margins were breached under prolonged energy deficit.";
+    let failedMetric = "ALL SYSTEMS STABLE";
+    if (finalState.battery <= 30) failedMetric = "BATTERY DEPLETION WARNING";
+    else if (finalState.crewHealth <= 45) failedMetric = "CREW HEALTH COMPROMISED";
+    else if (finalState.water <= 25) failedMetric = "WATER RESERVE CRITICAL";
 
-    const missedWarning = "Solar intake fell in earlier cycles, but high-drain systems remained online instead of switching to energy-conservation mode.";
-    const earliestRecoveryPoint = "During the Solar Power Drop crisis, choosing 'Save Power' or 'Emergency Mode' preserves over 40% battery life.";
-    const alternativeDecision = "Save electricity early! Science experiments can wait, but life support batteries cannot.";
-    const lessonLearned = "In lunar space exploration, all systems are interconnected: saving electricity early protects battery reserves, which keeps oxygen, heating, and food alive for your crew.";
+    const primaryCause = isFailed
+      ? `High-drain operations pushed outpost reserves into the red (${failedMetric}: Battery ${Math.round(finalState.battery)}%, Water ${Math.round(finalState.water)}%, Crew ${Math.round(finalState.crewHealth)}%).`
+      : `Balanced systems engineering kept all vital life-support reserves safe (Battery ${Math.round(finalState.battery)}%, Water ${Math.round(finalState.water)}%, Crew ${Math.round(finalState.crewHealth)}%) while achieving ${finalState.scienceScore} Science PTS.`;
+
+    const missedWarning = isFailed
+      ? "When solar or filtration crises struck, keeping heavy research online drained backup buffers faster than the outpost could recharge."
+      : "Early warning telemetry from ORBIT was heeded promptly, preventing any single subsystem crisis from cascading into life support.";
+
+    const earliestRecoveryPoint = "During each Future Fork crisis, pausing non-essential loads or flushing clogged filters restores +10% to +25% safety margin.";
+    const alternativeDecision = "Prioritize battery, water, and crew protection first — sustainable outposts unlock more long-term science than risky short-term surges.";
+    const lessonLearned = "In lunar space exploration, all systems are interconnected: saving electricity and recycling water early protects battery reserves, which keeps oxygen, heating, and food alive for your crew.";
+
+    const timeline = [
+      {
+        stage: "TOUCHDOWN",
+        cycle: 1,
+        description: "Mission began at Sol 42 with nominal baseline reserves (78% Power, 72% Battery, 68% Water).",
+        icon: "🚀",
+        metricHighlight: "Baseline Systems Nominal"
+      },
+      ...missionLogs.map((log, idx) => ({
+        stage: log.wasWarningSign ? `RISK TAKEN` : `STABILIZED`,
+        cycle: idx + 2,
+        description: `${log.eventTitle}: Committed "${log.decisionChosen}".`,
+        icon: log.wasWarningSign ? "⚠️" : "✅",
+        metricHighlight: `BAT ${log.batteryAtEnd}% • PWR ${log.powerAtEnd}% • CREW ${log.crewAtEnd}%`
+      })),
+      {
+        stage: isFailed ? "CRITICAL STRAIN" : "MISSION SUCCESS",
+        cycle: missionLogs.length + 1,
+        description: isFailed
+          ? "Cumulative resource drain left the lunar base vulnerable to blackout."
+          : "Outpost achieved full operational sustainability at the Lunar South Pole!",
+        icon: isFailed ? "🔴" : "🏆",
+        metricHighlight: `Final Score: ${finalState.scienceScore} PTS • BAT ${Math.round(finalState.battery)}%`
+      }
+    ];
 
     return {
       failedMetric,
@@ -449,36 +560,7 @@ export class SimulationEngine {
       earliestRecoveryPoint,
       alternativeDecision,
       lessonLearned,
-      timeline: [
-        {
-          stage: "NOMINAL",
-          cycle: 1,
-          description: "Mission began with healthy baseline reserves across all subsystems.",
-          icon: "🚀",
-          metricHighlight: "All systems nominal (100%)"
-        },
-        {
-          stage: "WARNING",
-          cycle: 2,
-          description: "Solar panel intake plummeted when lunar mountain ridge cast shadows.",
-          icon: "⚠️",
-          metricHighlight: "Solar generation dropped 70%"
-        },
-        {
-          stage: "DECISION",
-          cycle: 2,
-          description: "Full science operations were kept running at maximum power drain.",
-          icon: "⚡",
-          metricHighlight: "Battery drain accelerated"
-        },
-        {
-          stage: "FAILURE",
-          cycle: 3,
-          description: "Battery reserves depleted completely, causing secondary cascade shutdown.",
-          icon: "🔴",
-          metricHighlight: "Battery reached 0%"
-        }
-      ]
+      timeline
     };
   }
 }

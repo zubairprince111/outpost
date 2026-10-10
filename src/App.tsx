@@ -8,17 +8,19 @@ import {
   SubsystemType,
   CriticalEvent,
   FutureOutcome,
-  DecisionOption
+  DecisionOption,
+  MissionLogEntry
 } from './simulation/SimulationModels';
 import { ResourceHud } from './ui/ResourceHud';
 import { OrbitCompanionWidget } from './ui/OrbitCompanionWidget';
 import { SubsystemInspector } from './ui/SubsystemInspector';
 import { FutureForkModal } from './ui/FutureForkModal';
 import { ConsequenceSequence } from './ui/ConsequenceSequence';
+import { FinalResultModal } from './ui/FinalResultModal';
 import { ArrivalScreen } from './ui/ArrivalScreen';
 import { CreditsModal } from './ui/CreditsModal';
 
-type GameState = 'arrival' | 'exploring' | 'future_fork' | 'consequence';
+type GameState = 'arrival' | 'exploring' | 'future_fork' | 'consequence' | 'final_result';
 
 export const App: React.FC = () => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -30,10 +32,26 @@ export const App: React.FC = () => {
   const [cycle, setCycle] = useState<number>(1);
   const maxCycles = 5;
 
-  const [resources, setResources] = useState<ResourceState>(SimulationEngine.getInitialState());
-  const [previousResources, setPreviousResources] = useState<ResourceState>(SimulationEngine.getInitialState());
-  const [subsystems, setSubsystems] = useState<SubsystemState[]>([]);
+  const [initialResources] = useState<ResourceState>(() => SimulationEngine.getInitialState());
+  const [resources, setResources] = useState<ResourceState>(() => SimulationEngine.getInitialState());
+  const [previousResources, setPreviousResources] = useState<ResourceState>(() => SimulationEngine.getInitialState());
+  const [subsystems, setSubsystems] = useState<SubsystemState[]>(() =>
+    SimulationEngine.getInitialSubsystems(SimulationEngine.getInitialState())
+  );
   const [selectedSubsystem, setSelectedSubsystem] = useState<SubsystemState | null>(null);
+  const [missionLogs, setMissionLogs] = useState<MissionLogEntry[]>([]);
+
+  // Ref to always access latest subsystems inside Three.js pointer callback
+  const subsystemsRef = useRef<SubsystemState[]>(subsystems);
+  useEffect(() => {
+    const updatedSubs = SimulationEngine.getInitialSubsystems(resources);
+    setSubsystems(updatedSubs);
+    subsystemsRef.current = updatedSubs;
+    if (selectedSubsystem) {
+      const refreshed = updatedSubs.find(s => s.type === selectedSubsystem.type) || null;
+      setSelectedSubsystem(refreshed);
+    }
+  }, [resources]);
 
   // Event & Future Fork States
   const [currentEvent, setCurrentEvent] = useState<CriticalEvent | null>(null);
@@ -51,12 +69,21 @@ export const App: React.FC = () => {
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [showCredits, setShowCredits] = useState<boolean>(false);
 
+  const handleSubsystemSelected = (type: SubsystemType) => {
+    const sub = subsystemsRef.current.find(s => s.type === type) || null;
+    setSelectedSubsystem(sub);
+    AudioEngine.getInstance().playSubsystemFocus();
+
+    if (sub) {
+      setOrbitMessage(`Inspecting ${sub.title}. ${sub.kidExplanation}`);
+      setOrbitMood('normal');
+      sceneManagerRef.current?.selectSubsystem(type);
+    }
+  };
+
   // Initialize Scene & Subsystems
   useEffect(() => {
     if (!containerRef.current) return;
-
-    const initialSubsystems = SimulationEngine.getInitialSubsystems(resources);
-    setSubsystems(initialSubsystems);
 
     const sceneManager = new LunarSceneManager(containerRef.current, {
       onSubsystemClick: (type: SubsystemType) => {
@@ -75,18 +102,6 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  const handleSubsystemSelected = (type: SubsystemType) => {
-    const sub = subsystems.find(s => s.type === type) || null;
-    setSelectedSubsystem(sub);
-    AudioEngine.getInstance().playSubsystemFocus();
-
-    if (sub) {
-      setOrbitMessage(`Inspecting ${sub.title}. ${sub.kidExplanation}`);
-      setOrbitMood('normal');
-      sceneManagerRef.current?.selectSubsystem(type);
-    }
-  };
-
   /* ------------------ START EXPEDITION (Cinematic Arrival) ------------------ */
   const handleStartMission = () => {
     const audio = AudioEngine.getInstance();
@@ -97,31 +112,34 @@ export const App: React.FC = () => {
     sceneManagerRef.current?.startArrivalCinematic();
 
     setOrbitMood('celebrating');
-    setOrbitMessage("Touchdown confirmed! Outpost life support online. Take a look around or prepare for scheduled solar operations.");
+    setOrbitMessage("Touchdown confirmed! Outpost life support online. Click any 3D module to inspect or run a crisis simulation.");
 
     setTimeout(() => {
       setOrbitMood('normal');
     }, 4500);
   };
 
-  /* ------------------ TRIGGER SOLAR POWER CRISIS ------------------ */
+  /* ------------------ TRIGGER CRISIS EVENT ------------------ */
   const handleTriggerCrisis = () => {
     const audio = AudioEngine.getInstance();
     audio.playCrisis();
-    audio.playVoice('problem1');
+    audio.playVoice(cycle % 2 === 1 ? 'problem1' : 'problem2');
 
-    const solarEvent = SimulationEngine.createSolarDropEvent(cycle + 1);
-    setCurrentEvent(solarEvent);
+    setSelectedSubsystem(null);
+    sceneManagerRef.current?.selectSubsystem(null);
+
+    const crisisEvent = SimulationEngine.getEventForCycle(cycle);
+    setCurrentEvent(crisisEvent);
 
     // Calculate deterministic Future Fork outcomes
-    const outcomes = SimulationEngine.simulateFutureFork(resources, solarEvent);
+    const outcomes = SimulationEngine.simulateFutureFork(resources, crisisEvent);
     setFutureOutcomes(outcomes);
-    setActivePreviewId(solarEvent.options[0].id);
+    setActivePreviewId(crisisEvent.options[0].id);
 
     // Update 3D World to Crisis Mode
     sceneManagerRef.current?.setVisualMode('crisis');
     setOrbitMood('alarmed');
-    setOrbitMessage(solarEvent.orbitWarning);
+    setOrbitMessage(crisisEvent.orbitWarning);
 
     setGameState('future_fork');
   };
@@ -137,22 +155,22 @@ export const App: React.FC = () => {
     if (option.worldVisualEffect === 'science_laser') {
       sceneManagerRef.current?.setVisualMode('preview_keep_running');
       setOrbitMood('thinking');
-      setOrbitMessage("Previewing Full Science: Discoveries surge, but battery banks face intense discharge!");
+      setOrbitMessage(`Previewing "${option.title}": High research output, but heavy strain on power reserves!`);
     } else if (option.worldVisualEffect === 'emergency_dim') {
       sceneManagerRef.current?.setVisualMode('preview_emergency');
       setOrbitMood('thinking');
-      setOrbitMessage("Previewing Emergency Mode: Habitat lighting dimmed to standby. 48-hour battery cushion guaranteed.");
+      setOrbitMessage(`Previewing "${option.title}": Non-essentials dimmed to standby for maximum survival cushion.`);
     } else {
       sceneManagerRef.current?.setVisualMode('preview_conserve');
       setOrbitMood('normal');
-      setOrbitMessage("Previewing Power Conservation: Science laser paused, life support safe and balanced.");
+      setOrbitMessage(`Previewing "${option.title}": Balanced conservation keeps life support and reserves safe.`);
     }
   };
 
   /* ------------------ COMMIT DECISION & CONSEQUENCES ------------------ */
   const handleCommitDecision = (optionId: string) => {
     const option = currentEvent?.options.find(o => o.id === optionId);
-    if (!option) return;
+    if (!option || !currentEvent) return;
 
     setLastCommittedDecision(option);
     setPreviousResources(resources);
@@ -160,21 +178,37 @@ export const App: React.FC = () => {
     // Deterministically advance simulation
     const updated = SimulationEngine.advanceCycle(resources, option);
     setResources(updated);
-    setCycle(prev => Math.min(maxCycles, prev + 1));
+    const nextCycle = Math.min(maxCycles, cycle + 1);
+    setCycle(nextCycle);
+
+    const wasRisky = option.deltaBattery <= -20 || option.deltaWater <= -10 || option.deltaCrew < 0;
+    setMissionLogs(prev => [
+      ...prev,
+      {
+        cycle,
+        eventTitle: currentEvent.title,
+        decisionChosen: option.title,
+        batteryAtEnd: Math.round(updated.battery),
+        powerAtEnd: Math.round(updated.power),
+        crewAtEnd: Math.round(updated.crewHealth),
+        wasWarningSign: wasRisky,
+        warningNote: option.causalChain[option.causalChain.length - 1] || ''
+      }
+    ]);
 
     // Update 3D World consequence state
     sceneManagerRef.current?.applyConsequenceState(updated, option.worldVisualEffect);
 
     const audio = AudioEngine.getInstance();
-    if (option.deltaBattery >= 0) {
+    if (!wasRisky) {
       audio.playSuccessChime();
       audio.playAmbient();
       setOrbitMood('celebrating');
-      setOrbitMessage("Strategy committed! Power grid stabilized and batteries protected.");
+      setOrbitMessage("Strategy committed! Outpost telemetry stabilized within safe operating margins.");
     } else {
       audio.playWarningKlaxon();
       setOrbitMood('alarmed');
-      setOrbitMessage("Warning: High power draw active! Batteries draining toward critical threshold.");
+      setOrbitMessage("Warning: High resource drain active! Check consequence telemetry carefully.");
     }
 
     setGameState('consequence');
@@ -185,9 +219,10 @@ export const App: React.FC = () => {
     AudioEngine.getInstance().playBeep(440, 0.1);
     setResources(previousResources);
     setCycle(prev => Math.max(1, prev - 1));
+    setMissionLogs(prev => prev.slice(0, -1));
     sceneManagerRef.current?.setVisualMode('crisis');
     setOrbitMood('thinking');
-    setOrbitMessage("Timeline rewound! Choose your preferred strategy carefully.");
+    setOrbitMessage("Timeline rewound! Compare the 3D outcomes and choose a safer strategy.");
     setGameState('future_fork');
   };
 
@@ -196,7 +231,36 @@ export const App: React.FC = () => {
     AudioEngine.getInstance().playBeep(880, 0.08);
     sceneManagerRef.current?.resetToOverview();
     setOrbitMood('normal');
-    setOrbitMessage("Mission resumed on Sol 42. Subsystems operating on committed power grid profile.");
+    setOrbitMessage(`Sol 42 • Cycle ${cycle}/${maxCycles} active. Click any module to inspect or trigger the next crisis.`);
+    setGameState('exploring');
+  };
+
+  /* ------------------ OPEN FINAL MISSION RESULT ------------------ */
+  const handleOpenFinalResult = () => {
+    const audio = AudioEngine.getInstance();
+    audio.playSuccessChime();
+    audio.playAmbient();
+    setSelectedSubsystem(null);
+    sceneManagerRef.current?.resetToOverview();
+    setOrbitMood('celebrating');
+    setOrbitMessage("Displaying Final Mission Result & Systems Thinking Evaluation!");
+    setGameState('final_result');
+  };
+
+  /* ------------------ RESTART FULL EXPEDITION ------------------ */
+  const handleRestartMission = () => {
+    const fresh = SimulationEngine.getInitialState();
+    setResources(fresh);
+    setPreviousResources(fresh);
+    setCycle(1);
+    setMissionLogs([]);
+    setSelectedSubsystem(null);
+    sceneManagerRef.current?.setVisualMode('nominal');
+    sceneManagerRef.current?.resetToOverview();
+    AudioEngine.getInstance().playAmbient();
+    AudioEngine.getInstance().playBeep(720, 0.12, 'triangle');
+    setOrbitMood('celebrating');
+    setOrbitMessage("New expedition initialized at Sol 42! All outpost reserves restored to baseline.");
     setGameState('exploring');
   };
 
@@ -213,10 +277,12 @@ export const App: React.FC = () => {
     setIsMuted(muted);
   };
 
+  const autopsyData = SimulationEngine.generateMissionAutopsy(resources, missionLogs);
+
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-black select-none">
+    <div className="relative w-full h-[100dvh] overflow-hidden bg-black select-none">
       {/* Three.js 3D Canvas Container */}
-      <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing" />
+      <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing touch-none" />
 
       {/* Cinematic Arrival Screen */}
       {gameState === 'arrival' && (
@@ -238,15 +304,50 @@ export const App: React.FC = () => {
             onToggleMute={handleToggleMute}
             onResetCamera={handleResetCamera}
             onTriggerCrisis={handleTriggerCrisis}
-            inCrisis={gameState === 'future_fork' || gameState === 'consequence'}
+            onOpenFinalResult={handleOpenFinalResult}
+            inCrisis={gameState === 'future_fork' || gameState === 'consequence' || gameState === 'final_result'}
           />
 
-          <OrbitCompanionWidget
-            message={orbitMessage}
-            mood={orbitMood}
-            onPlayVoice={() => AudioEngine.getInstance().playVoice('problem1')}
-            hasVoice={true}
-          />
+          {/* Hide ORBIT widget on mobile when SubsystemInspector bottom sheet is open to prevent overlap */}
+          <div className={selectedSubsystem ? 'hidden md:block' : 'block'}>
+            <OrbitCompanionWidget
+              message={orbitMessage}
+              mood={orbitMood}
+              onPlayVoice={() => AudioEngine.getInstance().playVoice('problem1')}
+              hasVoice={true}
+            />
+          </div>
+
+          {/* Quick Subsystem Selector Bar (Swipeable bottom bar on mobile, bottom-right dock on desktop) */}
+          {gameState === 'exploring' && (
+            <div
+              className={`
+                ${selectedSubsystem ? 'hidden md:flex' : 'flex'}
+                absolute bottom-2.5 left-2.5 right-2.5 sm:left-auto sm:bottom-6 sm:right-6 z-20
+                pointer-events-auto items-center gap-1 sm:gap-1.5 overflow-x-auto no-scrollbar
+                bg-slate-950/90 backdrop-blur-md border border-slate-700/70 rounded-2xl p-1 sm:p-1.5 shadow-2xl
+              `}
+            >
+              {subsystems.map((sub) => {
+                const isSelected = selectedSubsystem?.type === sub.type;
+                return (
+                  <button
+                    key={sub.type}
+                    onClick={() => handleSubsystemSelected(sub.type)}
+                    className={`px-2.5 py-1.5 rounded-xl text-[11px] sm:text-xs font-mono flex items-center gap-1 sm:gap-1.5 shrink-0 transition-all active:scale-95 ${
+                      isSelected
+                        ? 'bg-cyan-500/25 text-cyan-300 border border-cyan-400/60 shadow-[0_0_12px_rgba(6,182,212,0.3)]'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800/80 border border-transparent'
+                    }`}
+                    title={`Select ${sub.title}`}
+                  >
+                    <span>{sub.emoji}</span>
+                    <span className="font-bold">{sub.shortName}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <SubsystemInspector
             subsystem={selectedSubsystem}
@@ -280,8 +381,25 @@ export const App: React.FC = () => {
           decision={lastCommittedDecision}
           previousState={previousResources}
           updatedState={resources}
+          cycle={cycle}
+          maxCycles={maxCycles}
           onDismiss={handleResumeMission}
           onRewind={handleRewindDecision}
+          onViewFinalResult={handleOpenFinalResult}
+        />
+      )}
+
+      {/* Final Mission Result Modal */}
+      {gameState === 'final_result' && (
+        <FinalResultModal
+          initialState={initialResources}
+          finalState={resources}
+          missionLogs={missionLogs}
+          autopsy={autopsyData}
+          cycle={cycle}
+          maxCycles={maxCycles}
+          onRestartMission={handleRestartMission}
+          onReturnToBase={() => setGameState('exploring')}
         />
       )}
 
@@ -292,3 +410,5 @@ export const App: React.FC = () => {
     </div>
   );
 };
+
+

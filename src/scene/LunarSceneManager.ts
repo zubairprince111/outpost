@@ -55,8 +55,9 @@ export class LunarSceneManager {
   // Selection
   private raycaster = new THREE.Raycaster();
   private mouse = new THREE.Vector2();
+  private pointerDownPos = new THREE.Vector2();
   private selectedSubsystem: SubsystemType | null = null;
-  private highlightRing: THREE.Mesh | null = null;
+  private highlightRing: THREE.Group | null = null;
 
   // Camera Animation State
   private isCameraTransitioning: boolean = false;
@@ -86,35 +87,45 @@ export class LunarSceneManager {
     this.scene.background = new THREE.Color(0x02040a); // Deep lunar black sky
     this.scene.fog = new THREE.FogExp2(0x050914, 0.0035);
 
-    // 2. Camera
+    // 2. Camera (Responsive FOV & distance for portrait mobile screens)
+    const initialAspect = container.clientWidth / Math.max(1, container.clientHeight);
     this.camera = new THREE.PerspectiveCamera(
-      48,
-      container.clientWidth / container.clientHeight,
+      this.getEffectiveFov(initialAspect),
+      initialAspect,
       0.1,
       2000
     );
-    this.camera.position.set(0, 18, 42);
+    this.camera.position.copy(this.getOverviewCameraPosition());
 
     // 3. Renderer
+    const isMobileDevice = window.innerWidth < 768;
     this.renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !isMobileDevice,
       powerPreference: 'high-performance'
     });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, isMobileDevice ? 1.75 : 2));
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.domElement.style.touchAction = 'none';
     container.appendChild(this.renderer.domElement);
 
-    // 4. OrbitControls
+    // 4. OrbitControls (Touch & Mouse)
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.05;
+    this.controls.dampingFactor = 0.06;
+    this.controls.rotateSpeed = isMobileDevice ? 0.75 : 0.9;
+    this.controls.zoomSpeed = 1.1;
+    this.controls.panSpeed = 0.8;
     this.controls.maxPolarAngle = Math.PI / 2 - 0.04; // Don't clip below ground
-    this.controls.minDistance = 6;
-    this.controls.maxDistance = 140;
+    this.controls.minDistance = 5;
+    this.controls.maxDistance = 150;
+    this.controls.touches = {
+      ONE: THREE.TOUCH.ROTATE,
+      TWO: THREE.TOUCH.DOLLY_PAN
+    };
     this.controls.target.copy(this.currentLookAt);
 
     // 5. Loader
@@ -125,11 +136,12 @@ export class LunarSceneManager {
     this.scene.add(ambientLight);
 
     // Harsh lunar directional sunlight
+    const shadowRes = isMobileDevice ? 1024 : 2048;
     this.sunLight = new THREE.DirectionalLight(0xfff5e6, 3.2);
     this.sunLight.position.set(-65, 45, 30);
     this.sunLight.castShadow = true;
-    this.sunLight.shadow.mapSize.width = 2048;
-    this.sunLight.shadow.mapSize.height = 2048;
+    this.sunLight.shadow.mapSize.width = shadowRes;
+    this.sunLight.shadow.mapSize.height = shadowRes;
     this.sunLight.shadow.camera.near = 10;
     this.sunLight.shadow.camera.far = 180;
     this.sunLight.shadow.camera.left = -50;
@@ -173,6 +185,7 @@ export class LunarSceneManager {
     // Event listeners
     window.addEventListener('resize', this.onWindowResize);
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.addEventListener('pointerup', this.onPointerUp);
 
     // Start render loop
     this.clock.start();
@@ -269,8 +282,61 @@ export class LunarSceneManager {
   /* =========================================================================
    * DETAILED LUNAR TERRAIN WITH ELEVATIONS & CRATERS
    * ========================================================================= */
+  private getTerrainHeight(x: number, z: number): number {
+    // Crater centers [x, z, radius, depth]
+    const craters = [
+      [ -28,  20, 16, 3.8 ],
+      [  32, -18, 22, 5.2 ],
+      [ -45, -35, 30, 7.5 ],
+      [  15,  35, 12, 2.5 ],
+      [ -24, -18,  9, 1.8 ]
+    ];
+
+    // Subtle base undulation
+    let height = Math.sin(x * 0.035) * Math.cos(z * 0.035) * 1.2
+               + Math.sin(x * 0.09 + z * 0.06) * 0.5;
+
+    // Distant mountain ridges
+    const distFromCenter = Math.sqrt(x * x + z * z);
+    if (distFromCenter > 70) {
+      const factor = (distFromCenter - 70) / 90;
+      height += (Math.sin(x * 0.04) * 8 + Math.cos(z * 0.04) * 6 + 12) * Math.min(factor, 1.8);
+    }
+
+    // Lunar mountain ridge that casts the crisis shadow!
+    if (x < -30 && z > 0 && z < 60) {
+      height += Math.max(0, 14 - Math.abs(x + 50) * 0.4);
+    }
+
+    // Carve craters
+    for (const [cx, cz, cr, cd] of craters) {
+      const dist = Math.hypot(x - cx, z - cz);
+      if (dist < cr) {
+        const normDist = dist / cr;
+        // Crater bowl
+        const bowl = Math.cos(normDist * Math.PI * 0.5);
+        height -= bowl * cd;
+        // Crater elevated rim
+        if (normDist > 0.75) {
+          height += Math.sin((normDist - 0.75) * 4 * Math.PI) * (cd * 0.35);
+        }
+      }
+    }
+
+    // Level central outpost landing basin around (0,0) so modules and selection rings sit flush
+    if (distFromCenter <= 18) {
+      return 0;
+    } else if (distFromCenter < 28) {
+      const t = (distFromCenter - 18) / 10;
+      const smooth = t * t * (3 - 2 * t);
+      height *= smooth;
+    }
+
+    return height;
+  }
+
   private initLunarTerrain() {
-    // Terrain mesh with procedural crater craters and rim mountains
+    // Terrain mesh with procedural craters and rim mountains
     const size = 320;
     const segments = 128;
     const terrainGeo = new THREE.PlaneGeometry(size, size, segments, segments);
@@ -279,55 +345,9 @@ export class LunarSceneManager {
     const posAttr = terrainGeo.attributes.position;
     const v = new THREE.Vector3();
 
-    // Crater centers [x, z, radius, depth]
-    const craters = [
-      [ -28,  20, 16, 3.8 ],
-      [  32, -18, 22, 5.2 ],
-      [ -45, -35, 30, 7.5 ],
-      [  15,  35, 12, 2.5 ],
-      [ -14,  -2,  9, 1.8 ]
-    ];
-
     for (let i = 0; i < posAttr.count; i++) {
       v.fromBufferAttribute(posAttr, i);
-
-      // Subtle base undulation
-      let height = Math.sin(v.x * 0.035) * Math.cos(v.z * 0.035) * 1.2
-                 + Math.sin(v.x * 0.09 + v.z * 0.06) * 0.5;
-
-      // Distant mountain ridges
-      const distFromCenter = Math.sqrt(v.x * v.x + v.z * v.z);
-      if (distFromCenter > 70) {
-        const factor = (distFromCenter - 70) / 90;
-        height += (Math.sin(v.x * 0.04) * 8 + Math.cos(v.z * 0.04) * 6 + 12) * Math.min(factor, 1.8);
-      }
-
-      // Lunar mountain ridge that casts the crisis shadow!
-      if (v.x < -30 && v.z > 0 && v.z < 60) {
-        height += Math.max(0, 14 - Math.abs(v.x + 50) * 0.4);
-      }
-
-      // Carve craters
-      for (const [cx, cz, cr, cd] of craters) {
-        const dist = Math.hypot(v.x - cx, v.z - cz);
-        if (dist < cr) {
-          const normDist = dist / cr;
-          // Crater bowl
-          const bowl = Math.cos(normDist * Math.PI * 0.5);
-          height -= bowl * cd;
-          // Crater elevated rim
-          if (normDist > 0.75) {
-            height += Math.sin((normDist - 0.75) * 4 * Math.PI) * (cd * 0.35);
-          }
-        }
-      }
-
-      // Smooth central outpost basin around (0,0)
-      if (distFromCenter < 24) {
-        height *= distFromCenter / 24;
-      }
-
-      posAttr.setY(i, height);
+      posAttr.setY(i, this.getTerrainHeight(v.x, v.z));
     }
 
     terrainGeo.computeVertexNormals();
@@ -349,7 +369,7 @@ export class LunarSceneManager {
     terrainMesh.receiveShadow = true;
     this.terrainGroup.add(terrainMesh);
 
-    // Scattered regolith rocks and boulders
+    // Scattered regolith rocks and boulders (kept outside the central outpost pad)
     const rockGeo = new THREE.DodecahedronGeometry(0.8, 1);
     const rockMat = new THREE.MeshStandardMaterial({
       color: 0x6e727c,
@@ -359,9 +379,12 @@ export class LunarSceneManager {
     for (let i = 0; i < 90; i++) {
       const rock = new THREE.Mesh(rockGeo, rockMat);
       const angle = Math.random() * Math.PI * 2;
-      const radius = 12 + Math.random() * 65;
+      const radius = 19 + Math.random() * 60;
       const scale = 0.4 + Math.random() * 1.4;
-      rock.position.set(Math.cos(angle) * radius, scale * 0.5, Math.sin(angle) * radius);
+      const rx = Math.cos(angle) * radius;
+      const rz = Math.sin(angle) * radius;
+      const ry = this.getTerrainHeight(rx, rz);
+      rock.position.set(rx, ry + scale * 0.35, rz);
       rock.scale.set(scale, scale * (0.6 + Math.random() * 0.8), scale);
       rock.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
       rock.castShadow = true;
@@ -370,6 +393,26 @@ export class LunarSceneManager {
     }
 
     this.scene.add(this.terrainGroup);
+  }
+
+  /**
+   * Centers a loaded GLTF scene horizontally (X = 0, Z = 0) and aligns its base to Y = 0
+   * inside a pivot Group so internal node translations (e.g. Kenney [2, 0, 1.5])
+   * never shift the mesh away from its world position or selection circle.
+   */
+  private normalizeModel(gltfScene: THREE.Object3D, scale: number): THREE.Group {
+    gltfScene.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(gltfScene);
+    const center = new THREE.Vector3();
+    box.getCenter(center);
+
+    gltfScene.position.set(-center.x, -box.min.y, -center.z);
+    this.enableShadows(gltfScene);
+
+    const wrapper = new THREE.Group();
+    wrapper.add(gltfScene);
+    wrapper.scale.set(scale, scale, scale);
+    return wrapper;
   }
 
   /* =========================================================================
@@ -382,20 +425,18 @@ export class LunarSceneManager {
     this.gltfLoader.load(
       '/models/solar_panels.glb',
       (gltf) => {
-        const model = gltf.scene;
-        model.scale.set(2.4, 2.4, 2.4);
+        const model = this.normalizeModel(gltf.scene, 2.4);
         model.position.set(-14, 0, 8);
         model.rotation.y = -Math.PI * 0.35;
-        this.enableShadows(model);
         model.userData = { subsystemType: SubsystemType.SOLAR_ARRAY };
 
         this.solarArrayMesh = model;
         this.subsystemNodes.set(SubsystemType.SOLAR_ARRAY, model);
         this.outpostGroup.add(model);
+        if (this.selectedSubsystem === SubsystemType.SOLAR_ARRAY) this.updateHighlightRingForNode(model);
       },
       undefined,
       () => {
-        // Procedural Fallback if file takes longer
         this.createFallbackSolarArray();
       }
     );
@@ -404,15 +445,14 @@ export class LunarSceneManager {
     this.gltfLoader.load(
       '/models/hangar_largeA.glb',
       (gltf) => {
-        const model = gltf.scene;
-        model.scale.set(3.2, 3.2, 3.2);
+        const model = this.normalizeModel(gltf.scene, 3.2);
         model.position.set(0, 0, 0);
-        this.enableShadows(model);
         model.userData = { subsystemType: SubsystemType.HABITAT };
 
         this.habitatMesh = model;
         this.subsystemNodes.set(SubsystemType.HABITAT, model);
         this.outpostGroup.add(model);
+        if (this.selectedSubsystem === SubsystemType.HABITAT) this.updateHighlightRingForNode(model);
       },
       undefined,
       () => {
@@ -424,13 +464,8 @@ export class LunarSceneManager {
     this.gltfLoader.load(
       '/models/hangar_roundGlass.glb',
       (gltf) => {
-        const model = gltf.scene;
-        model.scale.set(2.6, 2.6, 2.6);
-        model.position.set(8, 0, -4);
-        this.enableShadows(model);
-
         // Enhance glass material
-        model.traverse((child) => {
+        gltf.scene.traverse((child) => {
           if ((child as THREE.Mesh).isMesh) {
             const mesh = child as THREE.Mesh;
             if (mesh.material) {
@@ -447,10 +482,14 @@ export class LunarSceneManager {
           }
         });
 
+        const model = this.normalizeModel(gltf.scene, 2.6);
+        model.position.set(8, 0, -4);
         model.userData = { subsystemType: SubsystemType.GREENHOUSE };
+
         this.greenhouseMesh = model;
         this.subsystemNodes.set(SubsystemType.GREENHOUSE, model);
         this.outpostGroup.add(model);
+        if (this.selectedSubsystem === SubsystemType.GREENHOUSE) this.updateHighlightRingForNode(model);
       },
       undefined,
       () => {
@@ -462,15 +501,14 @@ export class LunarSceneManager {
     this.gltfLoader.load(
       '/models/machine_generatorLarge.glb',
       (gltf) => {
-        const model = gltf.scene;
-        model.scale.set(2.8, 2.8, 2.8);
+        const model = this.normalizeModel(gltf.scene, 2.8);
         model.position.set(-6, 0, 5);
-        this.enableShadows(model);
         model.userData = { subsystemType: SubsystemType.BATTERY_STORAGE };
 
         this.batteryMesh = model;
         this.subsystemNodes.set(SubsystemType.BATTERY_STORAGE, model);
         this.outpostGroup.add(model);
+        if (this.selectedSubsystem === SubsystemType.BATTERY_STORAGE) this.updateHighlightRingForNode(model);
       },
       undefined,
       () => {
@@ -482,17 +520,16 @@ export class LunarSceneManager {
     this.gltfLoader.load(
       '/models/corridor_window.glb',
       (gltf) => {
-        const model = gltf.scene;
-        model.scale.set(3.0, 3.0, 3.0);
+        const model = this.normalizeModel(gltf.scene, 3.0);
         model.position.set(6, 0, 6);
         model.rotation.y = Math.PI * 0.25;
-        this.enableShadows(model);
         model.userData = { subsystemType: SubsystemType.SCIENCE_LAB };
 
         this.scienceLabMesh = model;
         this.subsystemNodes.set(SubsystemType.SCIENCE_LAB, model);
         this.outpostGroup.add(model);
         this.initScienceLaser();
+        if (this.selectedSubsystem === SubsystemType.SCIENCE_LAB) this.updateHighlightRingForNode(model);
       },
       undefined,
       () => {
@@ -504,16 +541,15 @@ export class LunarSceneManager {
     this.gltfLoader.load(
       '/models/satelliteDish_detailed.glb',
       (gltf) => {
-        const model = gltf.scene;
-        model.scale.set(3.0, 3.0, 3.0);
+        const model = this.normalizeModel(gltf.scene, 3.0);
         model.position.set(-4, 0, -8);
-        model.lookAt(180, 140, -220); // Aim directly at Earth!
-        this.enableShadows(model);
+        model.rotation.y = Math.atan2(180 - (-4), -220 - (-8)); // Aim horizontally toward Earth
         model.userData = { subsystemType: SubsystemType.COMM_ARRAY };
 
         this.commDishMesh = model;
         this.subsystemNodes.set(SubsystemType.COMM_ARRAY, model);
         this.outpostGroup.add(model);
+        if (this.selectedSubsystem === SubsystemType.COMM_ARRAY) this.updateHighlightRingForNode(model);
       },
       undefined,
       () => {
@@ -525,16 +561,15 @@ export class LunarSceneManager {
     this.gltfLoader.load(
       '/models/rover.glb',
       (gltf) => {
-        const model = gltf.scene;
-        model.scale.set(2.2, 2.2, 2.2);
-        model.position.set(13, 0.2, 9);
+        const model = this.normalizeModel(gltf.scene, 4.2);
+        model.position.set(12, 0, 8);
         model.rotation.y = -Math.PI * 0.4;
-        this.enableShadows(model);
         model.userData = { subsystemType: SubsystemType.ROVER };
 
         this.roverMesh = model;
         this.subsystemNodes.set(SubsystemType.ROVER, model);
         this.outpostGroup.add(model);
+        if (this.selectedSubsystem === SubsystemType.ROVER) this.updateHighlightRingForNode(model);
       },
       undefined,
       () => {
@@ -544,37 +579,30 @@ export class LunarSceneManager {
 
     // 8. ASTRONAUTS ON EVA (astronautA.glb & astronautB.glb)
     this.gltfLoader.load('/models/astronautA.glb', (gltf) => {
-      const astronaut = gltf.scene;
-      astronaut.scale.set(1.4, 1.4, 1.4);
-      astronaut.position.set(2.5, 0, 4.5);
+      const astronaut = this.normalizeModel(gltf.scene, 1.4);
+      astronaut.position.set(3.5, 0, 4.2);
       astronaut.rotation.y = Math.PI * 0.2;
-      this.enableShadows(astronaut);
       this.outpostGroup.add(astronaut);
     });
 
     this.gltfLoader.load('/models/astronautB.glb', (gltf) => {
-      const astronaut = gltf.scene;
-      astronaut.scale.set(1.4, 1.4, 1.4);
-      astronaut.position.set(-8, 0, 6.2);
+      const astronaut = this.normalizeModel(gltf.scene, 1.4);
+      astronaut.position.set(-8.2, 0, 6.2);
       astronaut.rotation.y = -Math.PI * 0.5;
-      this.enableShadows(astronaut);
       this.outpostGroup.add(astronaut);
     });
 
     // 9. FOUNDATION PLATFORMS & CRATERS
     this.gltfLoader.load('/models/craterLarge.glb', (gltf) => {
-      const crater = gltf.scene;
-      crater.scale.set(4, 3, 4);
-      crater.position.set(-28, -0.4, 20);
-      this.enableShadows(crater);
+      const crater = this.normalizeModel(gltf.scene, 4.0);
+      crater.position.set(-28, this.getTerrainHeight(-28, 20) - 0.2, 20);
       this.outpostGroup.add(crater);
     });
 
     this.gltfLoader.load('/models/platform_large.glb', (gltf) => {
-      const platform = gltf.scene;
-      platform.scale.set(3, 1, 3);
-      platform.position.set(0, -0.1, 0);
-      this.enableShadows(platform);
+      const platform = this.normalizeModel(gltf.scene, 3.0);
+      platform.scale.set(3.2, 1.0, 3.2);
+      platform.position.set(0, -0.08, 0);
       this.outpostGroup.add(platform);
     });
   }
@@ -823,22 +851,113 @@ export class LunarSceneManager {
    * SELECTION & IN-WORLD HIGHLIGHT RING
    * ========================================================================= */
   private initHighlightRing() {
-    const ringGeo = new THREE.RingGeometry(3.5, 4.0, 36);
-    ringGeo.rotateX(-Math.PI / 2);
-    const ringMat = new THREE.MeshBasicMaterial({
+    this.highlightRing = new THREE.Group();
+
+    // Soft radial ground glow
+    const glowGeo = new THREE.CircleGeometry(0.95, 64);
+    glowGeo.rotateX(-Math.PI / 2);
+    const glowMat = new THREE.MeshBasicMaterial({
       color: 0x06b6d4,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.8
+      opacity: 0.14,
+      depthWrite: false
     });
-    this.highlightRing = new THREE.Mesh(ringGeo, ringMat);
-    this.highlightRing.position.set(0, 0.08, 0);
+    this.highlightRing.add(new THREE.Mesh(glowGeo, glowMat));
+
+    // Inner continuous precision ring
+    const innerRingGeo = new THREE.RingGeometry(0.82, 0.85, 64);
+    innerRingGeo.rotateX(-Math.PI / 2);
+    const innerRingMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.65,
+      depthWrite: false
+    });
+    this.highlightRing.add(new THREE.Mesh(innerRingGeo, innerRingMat));
+
+    // Outer primary selection ring
+    const outerRingGeo = new THREE.RingGeometry(0.93, 1.0, 64);
+    outerRingGeo.rotateX(-Math.PI / 2);
+    const outerRingMat = new THREE.MeshBasicMaterial({
+      color: 0x22d3ee,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false
+    });
+    this.highlightRing.add(new THREE.Mesh(outerRingGeo, outerRingMat));
+
+    // 4 Cardinal target lock arc segments
+    for (let i = 0; i < 4; i++) {
+      const startAngle = (i * Math.PI) / 2 - 0.22;
+      const arcGeo = new THREE.RingGeometry(1.04, 1.11, 24, 1, startAngle, 0.44);
+      arcGeo.rotateX(-Math.PI / 2);
+      const arcMat = new THREE.MeshBasicMaterial({
+        color: 0x67e8f9,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false
+      });
+      this.highlightRing.add(new THREE.Mesh(arcGeo, arcMat));
+    }
+
+    this.highlightRing.position.set(0, 0.06, 0);
     this.highlightRing.visible = false;
     this.scene.add(this.highlightRing);
   }
 
+  private updateHighlightRingForNode(node: THREE.Object3D): { boxCenter: THREE.Vector3; boxSize: THREE.Vector3; footprintRadius: number } {
+    node.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(node);
+    const boxCenter = new THREE.Vector3();
+    const boxSize = new THREE.Vector3();
+    box.getCenter(boxCenter);
+    box.getSize(boxSize);
+
+    // Circumradius around the horizontal footprint so the circle wraps the 3D element cleanly
+    const footprintRadius = Math.max(1.8, Math.hypot(boxSize.x, boxSize.z) * 0.52);
+    const groundY = Math.max(0, this.getTerrainHeight(boxCenter.x, boxCenter.z));
+
+    if (this.highlightRing) {
+      this.highlightRing.position.set(boxCenter.x, groundY + 0.06, boxCenter.z);
+      this.highlightRing.scale.set(footprintRadius, 1, footprintRadius);
+      this.highlightRing.visible = true;
+    }
+
+    return { boxCenter, boxSize, footprintRadius };
+  }
+
+  private getEffectiveFov(aspect: number): number {
+    // Expand vertical FOV on narrow portrait phones so the full lunar base fits horizontally
+    if (aspect < 1) {
+      return Math.min(68, Math.round(48 / Math.pow(Math.max(0.42, aspect), 0.38)));
+    }
+    return 48;
+  }
+
+  private getOverviewCameraPosition(): THREE.Vector3 {
+    const aspect = this.container.clientWidth / Math.max(1, this.container.clientHeight);
+    if (aspect < 0.75) {
+      return new THREE.Vector3(0, 24, 54);
+    } else if (aspect < 1.0) {
+      return new THREE.Vector3(0, 21, 48);
+    }
+    return new THREE.Vector3(0, 18, 42);
+  }
+
   private onPointerDown = (event: PointerEvent) => {
-    if (this.isCameraTransitioning || this.isArrivalCinematic) return;
+    this.pointerDownPos.set(event.clientX, event.clientY);
+  };
+
+  private onPointerUp = (event: PointerEvent) => {
+    if (this.isArrivalCinematic) return;
+
+    // Allow slightly more movement tolerance (12px) for mobile touch taps
+    const moveDist = Math.hypot(event.clientX - this.pointerDownPos.x, event.clientY - this.pointerDownPos.y);
+    if (moveDist > 12) return;
 
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -870,17 +989,30 @@ export class LunarSceneManager {
 
     const node = this.subsystemNodes.get(type);
     if (node) {
-      if (this.highlightRing) {
-        this.highlightRing.position.set(node.position.x, 0.08, node.position.z);
-        this.highlightRing.visible = true;
-      }
+      const { boxCenter, boxSize, footprintRadius } = this.updateHighlightRingForNode(node);
+      const isMobile = this.container.clientWidth < 768;
 
-      // Smooth camera transition to focus on the subsystem
-      const cameraOffset = new THREE.Vector3(node.position.x + 8, 7, node.position.z + 12);
-      this.animateCameraTo(cameraOffset, node.position.clone().add(new THREE.Vector3(0, 1.5, 0)), 1.4);
+      // Smooth camera transition to focus directly on the subsystem's true visual center.
+      // On mobile, frame the 3D module in the upper half of the screen above the bottom inspector card.
+      const camDist = Math.max(isMobile ? 10.5 : 8.5, footprintRadius * (isMobile ? 2.8 : 2.3));
+      const cameraOffset = new THREE.Vector3(
+        boxCenter.x + camDist * 0.6,
+        Math.max(isMobile ? 6.5 : 5.5, boxSize.y * 1.75),
+        boxCenter.z + camDist
+      );
+      const lookTarget = new THREE.Vector3(
+        boxCenter.x,
+        isMobile ? Math.max(0.2, boxSize.y * 0.25) - 1.1 : Math.max(1.0, boxSize.y * 0.45),
+        boxCenter.z
+      );
+      this.animateCameraTo(cameraOffset, lookTarget, 1.15);
 
       // Move ORBIT companion to inspect the chosen subsystem!
-      const orbitPos = node.position.clone().add(new THREE.Vector3(-2.5, 3.5, 2.5));
+      const orbitPos = new THREE.Vector3(
+        boxCenter.x - Math.max(2.2, footprintRadius * 0.75),
+        Math.max(3.2, boxSize.y + 1.2),
+        boxCenter.z + Math.max(2.2, footprintRadius * 0.75)
+      );
       this.moveOrbitTo(orbitPos);
     }
   }
@@ -915,7 +1047,7 @@ export class LunarSceneManager {
 
   public resetToOverview() {
     this.selectSubsystem(null);
-    this.animateCameraTo(new THREE.Vector3(0, 18, 42), new THREE.Vector3(0, 1.5, 0), 1.6);
+    this.animateCameraTo(this.getOverviewCameraPosition(), new THREE.Vector3(0, 1.5, 0), 1.4);
     this.moveOrbitTo(new THREE.Vector3(0, 3.5, 6));
   }
 
@@ -1028,10 +1160,11 @@ export class LunarSceneManager {
 
     // 3. Subsystem Idle Behaviors
     if (this.commDishMesh) {
-      this.commDishMesh.rotation.y = Math.sin(elapsedTime * 0.5) * 0.12;
+      const baseYaw = Math.atan2(180 - (-4), -220 - (-8));
+      this.commDishMesh.rotation.y = baseYaw + Math.sin(elapsedTime * 0.5) * 0.12;
     }
     if (this.highlightRing && this.highlightRing.visible) {
-      this.highlightRing.rotation.z += delta * 1.2;
+      this.highlightRing.rotation.y += delta * 0.85;
     }
 
     // 4. ORBIT Companion Floating & Gestures
@@ -1056,7 +1189,7 @@ export class LunarSceneManager {
         // Curve sweep from high orbit down to landing outpost
         const ease = this.easeInOutQuad(cinematicT);
         const startPos = new THREE.Vector3(-60, 48, 85);
-        const endPos = new THREE.Vector3(0, 18, 42);
+        const endPos = this.getOverviewCameraPosition();
 
         this.camera.position.lerpVectors(startPos, endPos, ease);
         this.camera.position.y += Math.sin(cinematicT * Math.PI) * 6; // Arc
@@ -1111,9 +1244,14 @@ export class LunarSceneManager {
 
   private onWindowResize = () => {
     if (!this.container) return;
-    this.camera.aspect = this.container.clientWidth / this.container.clientHeight;
+    const width = this.container.clientWidth;
+    const height = Math.max(1, this.container.clientHeight);
+    const aspect = width / height;
+
+    this.camera.aspect = aspect;
+    this.camera.fov = this.getEffectiveFov(aspect);
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(this.container.clientWidth, this.container.clientHeight);
+    this.renderer.setSize(width, height);
   };
 
   public dispose() {
@@ -1122,6 +1260,7 @@ export class LunarSceneManager {
     }
     window.removeEventListener('resize', this.onWindowResize);
     this.renderer.domElement.removeEventListener('pointerdown', this.onPointerDown);
+    this.renderer.domElement.removeEventListener('pointerup', this.onPointerUp);
     this.renderer.dispose();
     if (this.renderer.domElement.parentElement) {
       this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);
