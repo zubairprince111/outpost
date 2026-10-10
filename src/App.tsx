@@ -123,7 +123,6 @@ export const App: React.FC = () => {
   const handleTriggerCrisis = () => {
     const audio = AudioEngine.getInstance();
     audio.playCrisis();
-    audio.playVoice(cycle % 2 === 1 ? 'problem1' : 'problem2');
 
     setSelectedSubsystem(null);
     sceneManagerRef.current?.selectSubsystem(null);
@@ -313,8 +312,7 @@ export const App: React.FC = () => {
             <OrbitCompanionWidget
               message={orbitMessage}
               mood={orbitMood}
-              onPlayVoice={() => AudioEngine.getInstance().playVoice('problem1')}
-              hasVoice={true}
+              hasVoice={false}
             />
           </div>
 

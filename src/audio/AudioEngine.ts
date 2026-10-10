@@ -11,7 +11,6 @@ export class AudioEngine {
 
   private ambientMusic: HTMLAudioElement | null = null;
   private alertMusic: HTMLAudioElement | null = null;
-  private voiceAudio: HTMLAudioElement | null = null;
 
   private currentMusicState: 'ambient' | 'alert' | 'none' = 'none';
 
@@ -85,19 +84,6 @@ export class AudioEngine {
     this.playWarningKlaxon();
   }
 
-  public playVoice(type: 'problem1' | 'problem2') {
-    this.init();
-    const src = type === 'problem1' ? '/audio/problem_voice1.mp3' : '/audio/problem_voice2.mp3';
-    if (this.voiceAudio) {
-      this.voiceAudio.pause();
-    }
-    this.voiceAudio = new Audio(src);
-    this.voiceAudio.volume = this.isMuted ? 0 : 0.85 * this.masterVolume;
-    this.voiceAudio.play().catch(() => {
-      // Browser autoplay policy grace
-    });
-  }
-
   public toggleMute(): boolean {
     this.isMuted = !this.isMuted;
     if (this.ambientMusic) {
@@ -105,9 +91,6 @@ export class AudioEngine {
     }
     if (this.alertMusic) {
       this.alertMusic.volume = this.isMuted ? 0 : (this.currentMusicState === 'alert' ? 0.65 * this.masterVolume : 0);
-    }
-    if (this.voiceAudio) {
-      this.voiceAudio.volume = this.isMuted ? 0 : 0.85 * this.masterVolume;
     }
     return this.isMuted;
   }
