@@ -19,6 +19,7 @@ import { ConsequenceSequence } from './ui/ConsequenceSequence';
 import { FinalResultModal } from './ui/FinalResultModal';
 import { ArrivalScreen } from './ui/ArrivalScreen';
 import { CreditsModal } from './ui/CreditsModal';
+import { CursorPet } from './ui/CursorPet';
 
 type GameState = 'arrival' | 'exploring' | 'future_fork' | 'consequence' | 'final_result';
 
@@ -405,6 +406,9 @@ export const App: React.FC = () => {
       {showCredits && (
         <CreditsModal onClose={() => setShowCredits(false)} />
       )}
+
+      {/* Global Interactive Cursor Pet Companion */}
+      <CursorPet mood={orbitMood} />
     </div>
   );
 };
